@@ -138,7 +138,11 @@ def _write_grouped_metrics(df, writer, raw_last_row):
         ws.cell(row=1, column=c, value=h)
 
     rd = "'Raw Data'"  # sheet reference for formulas
-    rng = f"2:{raw_last_row}"  # data row range
+    lr = raw_last_row  # last data row
+
+    def rng(col):
+        """Return absolute range string like $A$2:$A$191."""
+        return f"${col}$2:${col}${lr}"
 
     for i, (_, row) in enumerate(pairs.iterrows(), start=2):
         store = int(row["store"])
@@ -149,31 +153,31 @@ def _write_grouped_metrics(df, writer, raw_last_row):
 
         # Criteria for SUMPRODUCT matching: (store match)*(dept match)
         match = (
-            f"({rd}!$A${rng}={store})*({rd}!$B${rng}={dept})"
-            f"*({rd}!$F${rng}<>0)"
+            f"({rd}!{rng('A')}={store})*({rd}!{rng('B')}={dept})"
+            f"*({rd}!{rng('F')}<>0)"
         )
 
         # MAD = mean of |error| for this group
         ws.cell(row=i, column=3).value = (
-            f"=SUMPRODUCT({match}*{rd}!$H${rng})"
+            f"=SUMPRODUCT({match}*{rd}!{rng('H')})"
             f"/SUMPRODUCT({match}*1)"
         )
 
         # MAPE = mean of APE × 100
         ws.cell(row=i, column=4).value = (
-            f"=SUMPRODUCT({match}*{rd}!$I${rng})"
+            f"=SUMPRODUCT({match}*{rd}!{rng('I')})"
             f"/SUMPRODUCT({match}*1)*100"
         )
 
         # Sales-to-Forecast Ratio = Σ sales / Σ forecast
         ws.cell(row=i, column=5).value = (
-            f"=SUMPRODUCT({match}*{rd}!$F${rng})"
-            f"/SUMPRODUCT({match}*{rd}!$E${rng})"
+            f"=SUMPRODUCT({match}*{rd}!{rng('F')})"
+            f"/SUMPRODUCT({match}*{rd}!{rng('E')})"
         )
 
         # Forecast Bias = mean of error
         ws.cell(row=i, column=6).value = (
-            f"=SUMPRODUCT({match}*{rd}!$G${rng})"
+            f"=SUMPRODUCT({match}*{rd}!{rng('G')})"
             f"/SUMPRODUCT({match}*1)"
         )
 
@@ -205,18 +209,23 @@ def _write_overall(writer, raw_last_row):
         ws.cell(row=1, column=c, value=h)
 
     rd = "'Raw Data'"
-    rng = f"2:{raw_last_row}"
-    nz = f"({rd}!$F${rng}<>0)"  # non-zero sales filter
+    lr = raw_last_row
+
+    def rng(col):
+        """Return absolute range string like $A$2:$A$191."""
+        return f"${col}$2:${col}${lr}"
+
+    nz = f"({rd}!{rng('F')}<>0)"  # non-zero sales filter
 
     metrics = [
         ("MAD",
-         f"=SUMPRODUCT({nz}*{rd}!$H${rng})/SUMPRODUCT({nz}*1)"),
+         f"=SUMPRODUCT({nz}*{rd}!{rng('H')})/SUMPRODUCT({nz}*1)"),
         ("MAPE",
-         f"=SUMPRODUCT({nz}*{rd}!$I${rng})/SUMPRODUCT({nz}*1)*100"),
+         f"=SUMPRODUCT({nz}*{rd}!{rng('I')})/SUMPRODUCT({nz}*1)*100"),
         ("Sales-to-Forecast Ratio",
-         f"=SUMPRODUCT({nz}*{rd}!$F${rng})/SUMPRODUCT({nz}*{rd}!$E${rng})"),
+         f"=SUMPRODUCT({nz}*{rd}!{rng('F')})/SUMPRODUCT({nz}*{rd}!{rng('E')})"),
         ("Forecast Bias",
-         f"=SUMPRODUCT({nz}*{rd}!$G${rng})/SUMPRODUCT({nz}*1)"),
+         f"=SUMPRODUCT({nz}*{rd}!{rng('G')})/SUMPRODUCT({nz}*1)"),
     ]
 
     fmt_map = {
@@ -233,7 +242,7 @@ def _write_overall(writer, raw_last_row):
 
     # Extra context rows
     ws.cell(row=7, column=1, value="Total Records").font = Font(bold=True)
-    ws.cell(row=7, column=2).value = f"=COUNTA({rd}!$A${rng})"
+    ws.cell(row=7, column=2).value = f"=COUNTA({rd}!{rng('A')})"
     ws.cell(row=7, column=2).number_format = "#,##0"
 
     ws.cell(row=8, column=1, value="Records Used (non-zero sales)").font = Font(bold=True)
