@@ -2,59 +2,74 @@ import pandas as pd
 
 def ingest_and_etl(file_path):
     """
-    Ingests an Excel file, performs basic ETL, and loads it into a Pandas DataFrame.
+    Ingests the Walmart sales forecast Excel file, performs ETL,
+    and loads it into a clean Pandas DataFrame.
 
     Args:
-        file_path (str): The path to the Excel file.
+        file_path (str): Path to the Excel file.
 
     Returns:
-        pd.DataFrame: The processed DataFrame.
+        pd.DataFrame: The processed DataFrame with columns:
+            store, dept, year, week, forecast, weekly_sales
     """
     try:
-        # Ingestion: Read the Excel file
-        df = pd.read_excel(file_path)
-        print(f"Successfully ingested data from {file_path}. Initial shape: {df.shape}")
-        print("Initial DataFrame head:")
-        print(df.head())
+        # --- INGESTION ---
+        # The "Data" sheet has headers at row index 2 (0-indexed),
+        # with actual data starting at row 3.
+        df = pd.read_excel(
+            file_path,
+            sheet_name="Data",
+            header=3,          # Row 3 is the header row (0-indexed)
+            usecols=range(1, 7) # Columns B through G
+        )
+        print(f"Ingested '{file_path}' → sheet 'Data'")
+        print(f"Raw shape: {df.shape}")
+        print(f"Raw columns: {df.columns.tolist()}")
+        print(df.head(3).to_string())
 
-        # Basic ETL steps (can be expanded based on requirements):
-        # 1. Rename columns for easier access (e.g., lowercase, replace spaces)
-        df.columns = df.columns.str.lower().str.replace(' ', '_')
-        print("\nDataFrame columns after renaming:")
-        print(df.columns.tolist())
+        # --- TRANSFORM ---
+        # 1. Standardize column names
+        df.columns = ["store", "dept", "year", "week", "forecast", "weekly_sales"]
 
-        # 2. Handle missing values (e.g., fill with 0 or mean, or drop rows)
-        # For now, let's assume no critical missing values that prevent calculation
-        # df = df.fillna(0) # Example: fill NaNs with 0
+        # 2. Drop rows where all values are NaN (empty rows)
+        df.dropna(how="all", inplace=True)
 
-        # 3. Convert data types if necessary
-        # Pandas often infers correctly, but explicit conversion can be done here
-        # Example: df['date_column'] = pd.to_datetime(df['date_column'])
+        # 3. Convert numeric columns
+        numeric_cols = ["store", "dept", "year", "week", "forecast", "weekly_sales"]
+        for col in numeric_cols:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # 4. Remove duplicates (if applicable)
-        # df.drop_duplicates(inplace=True)
+        # 4. Convert store/dept/year/week to integers where possible
+        int_cols = ["store", "dept", "year", "week"]
+        for col in int_cols:
+            df[col] = df[col].astype("Int64")
 
-        print(f"\nETL completed. Final DataFrame shape: {df.shape}")
-        print("Final DataFrame head:")
-        print(df.head())
+        # 5. Reset index
+        df.reset_index(drop=True, inplace=True)
+
+        # --- SUMMARY ---
+        print(f"\n--- ETL Complete ---")
+        print(f"Final shape: {df.shape}")
+        print(f"Dtypes:\n{df.dtypes}")
+        print(f"\nNull counts:\n{df.isnull().sum()}")
+        print(f"\nFirst 5 rows:")
+        print(df.head().to_string())
+        print(f"\nUnique stores: {sorted(df['store'].dropna().unique())}")
+        print(f"Unique depts:  {sorted(df['dept'].dropna().unique())}")
 
         return df
 
     except FileNotFoundError:
-        print(f"Error: The file {file_path} was not found.")
+        print(f"Error: File not found → {file_path}")
         return None
     except Exception as e:
-        print(f"An error occurred during ingestion and ETL: {e}")
+        print(f"Error during ETL: {e}")
         return None
 
-if __name__ == "__main__":
-    excel_file_path = 'sales_forecast_data.xlsx' # Assuming the Excel file is in the same directory
-    processed_df = ingest_and_etl(excel_file_path)
 
-    if processed_df is not None:
-        print("\nData loaded into DataFrame successfully and ready for further analysis.")
-        # You can now proceed with MAD, MAPE, etc., using 'processed_df'
-        # For example:
-        # mad, mape, sales_to_forecast_ratio, forecast_bias = calculate_metrics(processed_df)
+if __name__ == "__main__":
+    df = ingest_and_etl("sales_forecast_data.xlsx")
+    if df is not None:
+        print("\n✅ DataFrame ready for analysis.")
     else:
-        print("\nFailed to process data.")
+        print("\n❌ ETL failed.")
