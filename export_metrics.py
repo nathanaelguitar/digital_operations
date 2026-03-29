@@ -1,104 +1,278 @@
 """
 Export Forecast Metrics to Excel
-Reads sales forecast data, computes grouped and overall metrics,
-and writes a formatted multi-sheet Excel report.
+Writes a multi-sheet report with live Excel formulas and
+professional formatting using openpyxl.
+
+Sheets
+------
+1. Raw Data       – cleaned data plus formula columns (Error, |Error|, APE)
+2. By Store_Dept  – grouped metrics with formulas referencing Raw Data
+3. Overall        – summary metrics with formulas referencing Raw Data
 """
 
 import pandas as pd
-from ingestion_etl import ingest_and_etl
-from forecast_metrics import calculate_metrics
+from openpyxl import load_workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side, numbers
 from openpyxl.utils import get_column_letter
-from openpyxl.styles import Font, Alignment, numbers
+
+from ingestion_etl import ingest_and_etl
+
+# ─── Constants ────────────────────────────────────────────────────────────────
+OUTPUT_FILE = "forecast_metrics_report.xlsx"
+SOURCE_FILE = "sales_forecast_data.xlsx"
+
+HEADER_FONT = Font(bold=True, color="FFFFFF", size=11)
+HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+HEADER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
+THIN_BORDER = Border(
+    left=Side(style="thin"),
+    right=Side(style="thin"),
+    top=Side(style="thin"),
+    bottom=Side(style="thin"),
+)
+
+# Number format strings
+FMT_CURRENCY = '#,##0.00'
+FMT_INTEGER = '0'
+FMT_DECIMAL2 = '0.00'
+FMT_PERCENT = '0.00"%"'
+FMT_RATIO = '0.0000'
 
 
-def format_worksheet(ws, num_formats=None):
-    """Apply formatting to a worksheet: bold headers, auto-width, number formats."""
-    # Bold header row
-    header_font = Font(bold=True)
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+def _style_header(ws):
+    """Apply header styling: font, fill, alignment, border."""
     for cell in ws[1]:
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center")
-
-    # Auto-fit column widths
-    for col_idx, col in enumerate(ws.columns, 1):
-        max_len = 0
-        col_letter = get_column_letter(col_idx)
-        for cell in col:
-            val = cell.value
-            if val is not None:
-                max_len = max(max_len, len(str(val)))
-        ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
-
-    # Apply number formats where specified
-    if num_formats:
-        for cell in ws[1]:
-            fmt = num_formats.get(cell.value)
-            if fmt:
-                for row_cell in ws.iter_rows(
-                    min_row=2, max_row=ws.max_row,
-                    min_col=cell.column, max_col=cell.column
-                ):
-                    row_cell[0].number_format = fmt
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = HEADER_ALIGN
+        cell.border = THIN_BORDER
 
 
+def _autofit_columns(ws, min_width=10, padding=3):
+    """Auto-fit column widths based on cell content."""
+    for col_idx, col_cells in enumerate(ws.columns, 1):
+        max_len = max(
+            (len(str(cell.value)) for cell in col_cells if cell.value is not None),
+            default=0,
+        )
+        ws.column_dimensions[get_column_letter(col_idx)].width = max(
+            max_len + padding, min_width
+        )
+
+
+def _apply_border(ws):
+    """Apply thin borders to all data cells."""
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, max_col=ws.max_column):
+        for cell in row:
+            cell.border = THIN_BORDER
+
+
+def _freeze_top_row(ws):
+    """Freeze the header row."""
+    ws.freeze_panes = "A2"
+
+
+# ─── Sheet builders ───────────────────────────────────────────────────────────
+def _write_raw_data(df, writer):
+    """
+    Write raw data to the 'Raw Data' sheet with formula columns:
+      Error          = weekly_sales − forecast   (col H)
+      Absolute Error = ABS(Error)                (col I)
+      APE            = |Error| / |weekly_sales|  (col J, as percentage)
+    """
+    # Write the base data (cols A–F: store, dept, year, week, forecast, weekly_sales)
+    # Reorder so forecast (E) comes before weekly_sales (F) for natural reading
+    base = df[["store", "dept", "year", "week", "forecast", "weekly_sales"]].copy()
+    base.to_excel(writer, sheet_name="Raw Data", index=False)
+
+    ws = writer.sheets["Raw Data"]
+    last_row = ws.max_row  # includes header
+
+    # Add formula column headers
+    ws["G1"] = "Error"
+    ws["H1"] = "Absolute_Error"
+    ws["I1"] = "APE"
+
+    # Write formulas for each data row
+    # Columns: E=forecast, F=weekly_sales, G=error, H=abs_error, I=APE
+    for r in range(2, last_row + 1):
+        ws[f"G{r}"] = f"=F{r}-E{r}"                        # Error
+        ws[f"H{r}"] = f"=ABS(G{r})"                        # |Error|
+        ws[f"I{r}"] = f'=IF(F{r}=0,"N/A",H{r}/ABS(F{r}))' # APE
+
+    # Formatting
+    _style_header(ws)
+    _freeze_top_row(ws)
+
+    for r in range(2, last_row + 1):
+        for col in ["A", "B", "C", "D"]:       # store, dept, year, week
+            ws[f"{col}{r}"].number_format = FMT_INTEGER
+        for col in ["E", "F", "G"]:             # forecast, weekly_sales, error
+            ws[f"{col}{r}"].number_format = FMT_CURRENCY
+        ws[f"H{r}"].number_format = FMT_CURRENCY  # |error|
+        ws[f"I{r}"].number_format = FMT_DECIMAL2   # APE
+
+    _apply_border(ws)
+    _autofit_columns(ws)
+
+    return last_row  # needed by other sheets for formula ranges
+
+
+def _write_grouped_metrics(df, writer, raw_last_row):
+    """
+    Write the 'By Store_Dept' sheet with formulas.
+
+    For each unique (store, dept) pair, writes SUMPRODUCT / COUNTIFS
+    formulas that reference the Raw Data sheet.
+    """
+    # Get unique (store, dept) pairs preserving order
+    pairs = df[["store", "dept"]].drop_duplicates().reset_index(drop=True)
+
+    ws = writer.book.create_sheet("By Store_Dept")
+
+    # Headers
+    headers = ["Store", "Dept", "MAD", "MAPE", "Sales_to_Forecast_Ratio",
+               "Forecast_Bias"]
+    for c, h in enumerate(headers, 1):
+        ws.cell(row=1, column=c, value=h)
+
+    rd = "'Raw Data'"  # sheet reference for formulas
+    rng = f"2:{raw_last_row}"  # data row range
+
+    for i, (_, row) in enumerate(pairs.iterrows(), start=2):
+        store = int(row["store"])
+        dept = int(row["dept"])
+
+        ws.cell(row=i, column=1, value=store)
+        ws.cell(row=i, column=2, value=dept)
+
+        # Criteria for SUMPRODUCT matching: (store match)*(dept match)
+        match = (
+            f"({rd}!$A${rng}={store})*({rd}!$B${rng}={dept})"
+            f"*({rd}!$F${rng}<>0)"
+        )
+
+        # MAD = mean of |error| for this group
+        ws.cell(row=i, column=3).value = (
+            f"=SUMPRODUCT({match}*{rd}!$H${rng})"
+            f"/SUMPRODUCT({match}*1)"
+        )
+
+        # MAPE = mean of APE × 100
+        ws.cell(row=i, column=4).value = (
+            f"=SUMPRODUCT({match}*{rd}!$I${rng})"
+            f"/SUMPRODUCT({match}*1)*100"
+        )
+
+        # Sales-to-Forecast Ratio = Σ sales / Σ forecast
+        ws.cell(row=i, column=5).value = (
+            f"=SUMPRODUCT({match}*{rd}!$F${rng})"
+            f"/SUMPRODUCT({match}*{rd}!$E${rng})"
+        )
+
+        # Forecast Bias = mean of error
+        ws.cell(row=i, column=6).value = (
+            f"=SUMPRODUCT({match}*{rd}!$G${rng})"
+            f"/SUMPRODUCT({match}*1)"
+        )
+
+    # Formatting
+    _style_header(ws)
+    _freeze_top_row(ws)
+
+    last = len(pairs) + 1
+    for r in range(2, last + 1):
+        ws.cell(row=r, column=1).number_format = FMT_INTEGER
+        ws.cell(row=r, column=2).number_format = FMT_INTEGER
+        ws.cell(row=r, column=3).number_format = FMT_CURRENCY   # MAD
+        ws.cell(row=r, column=4).number_format = FMT_DECIMAL2   # MAPE
+        ws.cell(row=r, column=5).number_format = FMT_RATIO      # Ratio
+        ws.cell(row=r, column=6).number_format = FMT_CURRENCY   # Bias
+
+    _apply_border(ws)
+    _autofit_columns(ws)
+
+
+def _write_overall(writer, raw_last_row):
+    """
+    Write the 'Overall' sheet with formulas referencing Raw Data.
+    """
+    ws = writer.book.create_sheet("Overall")
+
+    headers = ["Metric", "Value"]
+    for c, h in enumerate(headers, 1):
+        ws.cell(row=1, column=c, value=h)
+
+    rd = "'Raw Data'"
+    rng = f"2:{raw_last_row}"
+    nz = f"({rd}!$F${rng}<>0)"  # non-zero sales filter
+
+    metrics = [
+        ("MAD",
+         f"=SUMPRODUCT({nz}*{rd}!$H${rng})/SUMPRODUCT({nz}*1)"),
+        ("MAPE",
+         f"=SUMPRODUCT({nz}*{rd}!$I${rng})/SUMPRODUCT({nz}*1)*100"),
+        ("Sales-to-Forecast Ratio",
+         f"=SUMPRODUCT({nz}*{rd}!$F${rng})/SUMPRODUCT({nz}*{rd}!$E${rng})"),
+        ("Forecast Bias",
+         f"=SUMPRODUCT({nz}*{rd}!$G${rng})/SUMPRODUCT({nz}*1)"),
+    ]
+
+    fmt_map = {
+        "MAD": FMT_CURRENCY,
+        "MAPE": FMT_DECIMAL2,
+        "Sales-to-Forecast Ratio": FMT_RATIO,
+        "Forecast Bias": FMT_CURRENCY,
+    }
+
+    for r, (name, formula) in enumerate(metrics, start=2):
+        ws.cell(row=r, column=1, value=name).font = Font(bold=True)
+        ws.cell(row=r, column=2).value = formula
+        ws.cell(row=r, column=2).number_format = fmt_map[name]
+
+    # Extra context rows
+    ws.cell(row=7, column=1, value="Total Records").font = Font(bold=True)
+    ws.cell(row=7, column=2).value = f"=COUNTA({rd}!$A${rng})"
+    ws.cell(row=7, column=2).number_format = "#,##0"
+
+    ws.cell(row=8, column=1, value="Records Used (non-zero sales)").font = Font(bold=True)
+    ws.cell(row=8, column=2).value = f"=SUMPRODUCT({nz}*1)"
+    ws.cell(row=8, column=2).number_format = "#,##0"
+
+    # Formatting
+    _style_header(ws)
+    _freeze_top_row(ws)
+    _apply_border(ws)
+    _autofit_columns(ws, min_width=14)
+
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
-    # 1. Ingest data
-    df = ingest_and_etl("sales_forecast_data.xlsx")
+    """Build the forecast metrics Excel report."""
+    df = ingest_and_etl(SOURCE_FILE)
     if df is None or df.empty:
         print("❌ Failed to load data. Exiting.")
         return
 
-    # 2. Compute metrics
-    grouped_metrics = calculate_metrics(df, group_cols=["store", "dept"])
-    overall_metrics = calculate_metrics(df)
+    with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
+        # 1. Raw Data (must be first — other sheets reference it)
+        raw_last_row = _write_raw_data(df, writer)
 
-    # 3. Write to Excel
-    output_file = "forecast_metrics_report.xlsx"
+        # 2. Grouped metrics with formulas
+        _write_grouped_metrics(df, writer, raw_last_row)
 
-    with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
-        # Sheet 1: Grouped metrics
-        grouped_metrics.to_excel(writer, sheet_name="By Store_Dept", index=False)
+        # 3. Overall summary with formulas
+        _write_overall(writer, raw_last_row)
 
-        # Sheet 2: Overall metrics (single row)
-        overall_df = overall_metrics.to_frame().T  # Series → single-row DataFrame
-        overall_df.to_excel(writer, sheet_name="Overall", index=False)
+    # Reorder sheets: By Store_Dept, Overall, Raw Data
+    wb = load_workbook(OUTPUT_FILE)
+    order = ["By Store_Dept", "Overall", "Raw Data"]
+    wb._sheets = [wb[name] for name in order]
+    wb.save(OUTPUT_FILE)
 
-        # Sheet 3: Raw data
-        df.to_excel(writer, sheet_name="Raw Data", index=False)
-
-    # 4. Format all sheets
-    from openpyxl import load_workbook
-    wb = load_workbook(output_file)
-
-    # Common number format map
-    metrics_num_fmt = {
-        "MAD": "#,##0.00",
-        "MAPE": "0.00\"%\"",
-        "Sales_to_Forecast_Ratio": "0.0000",
-        "Forecast_Bias": "#,##0.00",
-    }
-
-    # Format Sheet 1: By Store_Dept
-    format_worksheet(wb["By Store_Dept"], num_formats=metrics_num_fmt)
-
-    # Format Sheet 2: Overall
-    format_worksheet(wb["Overall"], num_formats=metrics_num_fmt)
-
-    # Format Sheet 3: Raw Data
-    raw_num_fmt = {
-        "store": "0",
-        "dept": "0",
-        "year": "0",
-        "week": "0",
-        "forecast": "#,##0.00",
-        "weekly_sales": "#,##0.00",
-    }
-    format_worksheet(wb["Raw Data"], num_formats=raw_num_fmt)
-
-    wb.save(output_file)
-    print(f"\n✅ Report saved to '{output_file}'")
-    print(f"   Sheets: By Store_Dept | Overall | Raw Data")
-    print(f"   Grouped rows: {len(grouped_metrics)}")
+    print(f"✅ Report saved to '{OUTPUT_FILE}'")
+    print(f"   Sheets: {' | '.join(order)}")
     print(f"   Raw data rows: {len(df)}")
 
 

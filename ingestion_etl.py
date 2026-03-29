@@ -1,61 +1,70 @@
+"""
+Ingestion & ETL Module
+Reads a Walmart sales forecast Excel file, cleans the data,
+and returns a tidy Pandas DataFrame ready for analysis.
+"""
+
 import pandas as pd
 
-def ingest_and_etl(file_path):
+
+def ingest_and_etl(file_path, verbose=False):
     """
-    Ingests the Walmart sales forecast Excel file, performs ETL,
-    and loads it into a clean Pandas DataFrame.
+    Ingest the Walmart sales forecast Excel file and perform ETL.
 
-    Args:
-        file_path (str): Path to the Excel file.
+    Parameters
+    ----------
+    file_path : str
+        Path to the Excel file (must contain a "Data" sheet).
+    verbose : bool, optional
+        If True, print progress and summary info (default False).
 
-    Returns:
-        pd.DataFrame: The processed DataFrame with columns:
-            store, dept, year, week, forecast, weekly_sales
+    Returns
+    -------
+    pd.DataFrame or None
+        Cleaned DataFrame with columns:
+        store, dept, year, week, forecast, weekly_sales.
+        Returns None on failure.
     """
     try:
         # --- INGESTION ---
-        # The "Data" sheet has headers at row index 2 (0-indexed),
-        # with actual data starting at row 3.
+        # "Data" sheet: headers at row index 3 (0-based), columns B–G.
         df = pd.read_excel(
             file_path,
             sheet_name="Data",
-            header=3,          # Row 3 is the header row (0-indexed)
-            usecols=range(1, 7) # Columns B through G
+            header=3,
+            usecols=range(1, 7),
         )
-        print(f"Ingested '{file_path}' → sheet 'Data'")
-        print(f"Raw shape: {df.shape}")
-        print(f"Raw columns: {df.columns.tolist()}")
-        print(df.head(3).to_string())
+        if verbose:
+            print(f"Ingested '{file_path}' → sheet 'Data'")
+            print(f"Raw shape: {df.shape}")
+            print(f"Raw columns: {df.columns.tolist()}")
+            print(df.head(3).to_string())
 
         # --- TRANSFORM ---
-        # 1. Standardize column names
         df.columns = ["store", "dept", "year", "week", "forecast", "weekly_sales"]
 
-        # 2. Drop rows where all values are NaN (empty rows)
+        # Drop fully-empty rows
         df.dropna(how="all", inplace=True)
 
-        # 3. Convert numeric columns
-        numeric_cols = ["store", "dept", "year", "week", "forecast", "weekly_sales"]
-        for col in numeric_cols:
+        # Coerce to numeric
+        for col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # 4. Convert store/dept/year/week to integers where possible
-        int_cols = ["store", "dept", "year", "week"]
-        for col in int_cols:
+        # Integer columns where appropriate
+        for col in ["store", "dept", "year", "week"]:
             df[col] = df[col].astype("Int64")
 
-        # 5. Reset index
         df.reset_index(drop=True, inplace=True)
 
         # --- SUMMARY ---
-        print(f"\n--- ETL Complete ---")
-        print(f"Final shape: {df.shape}")
-        print(f"Dtypes:\n{df.dtypes}")
-        print(f"\nNull counts:\n{df.isnull().sum()}")
-        print(f"\nFirst 5 rows:")
-        print(df.head().to_string())
-        print(f"\nUnique stores: {sorted(df['store'].dropna().unique())}")
-        print(f"Unique depts:  {sorted(df['dept'].dropna().unique())}")
+        if verbose:
+            print(f"\n--- ETL Complete ---")
+            print(f"Final shape: {df.shape}")
+            print(f"Dtypes:\n{df.dtypes}")
+            print(f"\nNull counts:\n{df.isnull().sum()}")
+            print(f"\nFirst 5 rows:\n{df.head().to_string()}")
+            print(f"\nUnique stores: {sorted(df['store'].dropna().unique())}")
+            print(f"Unique depts:  {sorted(df['dept'].dropna().unique())}")
 
         return df
 
@@ -68,7 +77,7 @@ def ingest_and_etl(file_path):
 
 
 if __name__ == "__main__":
-    df = ingest_and_etl("sales_forecast_data.xlsx")
+    df = ingest_and_etl("sales_forecast_data.xlsx", verbose=True)
     if df is not None:
         print("\n✅ DataFrame ready for analysis.")
     else:
