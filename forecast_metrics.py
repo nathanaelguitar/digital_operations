@@ -1,1 +1,105 @@
-[['weekly_sales', 'forecast'], ['error'], ['weekly_sales'], ['forecast'], ['abs_error'], ['error'], ['abs_actual'], ['weekly_sales'], ['df_clean[\'abs_actual\'] != 0].copy()\n    \n    if group_cols:\n        grouped = df_filtered.groupby(group_cols)\n        \n        metrics = grouped.apply(lambda x: pd.Series({\n            \'MAD\': x[\'abs_error\'].mean(),\n            \'MAPE\': (x[\'abs_error\'] / x[\'abs_actual\']).mean() * 100,\n            \'Sales_to_Forecast_Ratio\': x[\'weekly_sales\'].sum() / x[\'forecast\'].sum() if x[\'forecast\'].sum() != 0 else np.nan,\n            \'Forecast_Bias\': x[\'error\'].mean()\n        })).reset_index()\n        \n        return metrics\n    else:\n        # Overall metrics\n        if len(df_filtered) == 0:\n            return None\n            \n        mad = df_filtered[\'abs_error\'].mean()\n        mape = (df_filtered[\'abs_error\'] / df_filtered[\'abs_actual\']).mean() * 100\n        sales_to_forecast_ratio = df_clean[\'weekly_sales\'].sum() / df_clean[\'forecast\'].sum() if df_clean[\'forecast\'].sum() != 0 else np.nan\n        forecast_bias = df_filtered[\'error\'].mean()\n        \n        return pd.Series({\n            \'MAD\': mad,\n            \'MAPE\': mape,\n            \'Sales_to_Forecast_Ratio\': sales_to_forecast_ratio,\n            \'Forecast_Bias\': forecast_bias\n        })\n\ndef main():\n    "', 'Main function to load data and calculate metrics."', '\n    # Load the data\n    file_path = "sales_forecast_data.xlsx"\n    df = ingest_and_etl(file_path)\n    \n    if df is None:\n        print("Failed to load data. Exiting.")\n        return\n    \n    print("\n=== FORECAST METRICS REPORT ===', 'Calculate metrics per store and department\n    metrics_by_store_dept = calculate_metrics(df, [\'store\', \'dept\'])\n    \n    if metrics_by_store_dept is not None and not metrics_by_store_dept.empty:\n        print("\nMetrics by Store and Department:")\n        print("=" * 80)\n        print(metrics_by_store_dept.round(4).to_string(index=False))\n    else:\n        print("\nNo valid data for store/department metrics.")\n    \n    print("\n" + "=" * 80)\n    \n    # Calculate overall metrics\n    overall_metrics = calculate_metrics(df)\n    \n    if overall_metrics is not None:\n        print("\nOverall Metrics:")\n        print("=" * 30)\n        print(overall_metrics.round(4))\n    else:\n        print("\nNo valid data for overall metrics.")\n\nif __name__ == "__main__', 'main()']]
+"""
+Forecast Metrics Calculator
+Computes MAD, MAPE, Sales-to-Forecast Ratio, and Forecast Bias
+from sales forecast data processed by ingestion_etl.py
+"""
+
+import numpy as np
+import pandas as pd
+from ingestion_etl import ingest_and_etl
+
+
+def calculate_metrics(df, group_cols=None):
+    """
+    Calculate forecast accuracy metrics.
+
+    Metrics:
+      - MAD  (Mean Absolute Deviation)
+      - MAPE (Mean Absolute Percentage Error)
+      - Sales-to-Forecast Ratio
+      - Forecast Bias
+
+    Parameters
+    ----------
+    df : pd.DataFrame  Must contain 'weekly_sales' and 'forecast' columns.
+    group_cols : list or None  Columns to group by (e.g. ['store', 'dept']).
+
+    Returns
+    -------
+    pd.DataFrame (grouped) or pd.Series (overall)
+    """
+    df = df.copy()
+    df["error"] = df["weekly_sales"] - df["forecast"]
+    df["abs_error"] = df["error"].abs()
+
+    # Filter out rows where actual sales are zero (MAPE undefined)
+    df = df[df["weekly_sales"] != 0].copy()
+
+    if group_cols:
+        grouped = df.groupby(group_cols, observed=True)
+
+        def _agg(group):
+            return pd.Series(
+                {
+                    "MAD": group["abs_error"].mean(),
+                    "MAPE": (group["abs_error"] / group["weekly_sales"].abs()).mean()
+                    * 100,
+                    "Sales_to_Forecast_Ratio": (
+                        group["weekly_sales"].sum() / group["forecast"].sum()
+                        if group["forecast"].sum() != 0
+                        else np.nan
+                    ),
+                    "Forecast_Bias": group["error"].mean(),
+                }
+            )
+
+        return grouped.apply(_agg, include_groups=False).reset_index()
+
+    # Overall
+    return pd.Series(
+        {
+            "MAD": df["abs_error"].mean(),
+            "MAPE": (df["abs_error"] / df["weekly_sales"].abs()).mean() * 100,
+            "Sales_to_Forecast_Ratio": (
+                df["weekly_sales"].sum() / df["forecast"].sum()
+                if df["forecast"].sum() != 0
+                else np.nan
+            ),
+            "Forecast_Bias": df["error"].mean(),
+        }
+    )
+
+
+def main():
+    """Load data, compute metrics, print report."""
+    df = ingest_and_etl("sales_forecast_data.xlsx")
+
+    if df is None or df.empty:
+        print("Failed to load data. Exiting.")
+        return
+
+    print(f"\n{'=' * 60}")
+    print("  FORECAST METRICS REPORT")
+    print(f"{'=' * 60}")
+    print(f"  Records loaded: {len(df)}")
+    print(f"{'=' * 60}")
+
+    # Grouped metrics
+    grouped = calculate_metrics(df, group_cols=["store", "dept"])
+    if grouped is not None and not grouped.empty:
+        print("\n  Metrics by Store & Department:")
+        print(f"  {'-' * 56}")
+        print(grouped.round(4).to_string(index=False))
+
+    # Overall metrics
+    print(f"\n{'=' * 60}")
+    overall = calculate_metrics(df)
+    print("  Overall Metrics:")
+    print(f"  {'-' * 56}")
+    for metric, value in overall.items():
+        print(f"    {metric:<30} {value:>12.4f}")
+    print(f"{'=' * 60}\n")
+
+
+if __name__ == "__main__":
+    main()
